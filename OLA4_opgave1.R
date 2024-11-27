@@ -1,195 +1,520 @@
-### BILBASEN - VIDEO WULF #####
-library(httr) # for at snakke med hjemmesiden 
-library(rvest)
-library(dplyr)
-library(stringr)
+###################################################
+################ OPGAVE 1 - WEBSCRAPE #############
+###################################################
+# ---------------------------------------------------------------------------------------------------------------------------
+### OPGAVE 1.1 - HENT DATA FRA BILBASEN.DK ###
 
-# headers
-carheaders <- c(firsbb)
+# Importér nødvendige biblioteker
+library(httr)        # Til HTTP-anmodninger
+library(rvest)       # Til webscraping
+library(tidyverse)   # Til datahåndtering, manipulation og visualisering
+library(stringr)     # Til avanceret tekstmanipulation
+library(readr)       # Til at læse/skrive CSV-filer
 
-#first page 
-startlink <- "https://www.bilbasen.dk/brugt/bil/vw/id2314?fuel=3&includeengroscvr=true&includeleasing=false"
-rawres <- GET(url=startlink)
-rawres$status_code 
-rawcontent <- httr::content(rawres,as="text")
+# Definér URL til VW ID4 biler på Bilbasen
+vwlink <- "https://www.bilbasen.dk/brugt/bil/vw/id2314?fuel=3&includeengroscvr=true&includeleasing=false"
 
+# Definér HTTP-headers for at undgå at blive blokeret
+headers <- add_headers(
+  `user-agent` = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0 Safari/537.36",
+  `accept` = "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+  `referer` = "https://www.bilbasen.dk",
+  `accept-language` = "da-DK,da;q=0.9,en-US;q=0.8,en;q=0.7"
+)
 
+# Send en HTTP-anmodning til Bilbasen for at finde antal sider
+response <- GET(vwlink, headers)
+if (status_code(response) != 200) {
+  stop("Fejl ved hentning af data. Statuskode:", status_code(response))
+}
 
+# Find antal sider baseret på pagination
+page <- read_html(content(response, as = "text", encoding = "UTF-8"))
+last_page <- page %>%
+  html_element('span[data-e2e="pagination-total"]') %>% 
+  html_text(trim = TRUE) %>% 
+  as.numeric()
+cat("Antal sider fundet:", last_page, "\n")
 
-#transform text til html-nodes
-page <- read_html(rawcontent)
+# Initialiser en tom dataframe
+vwdf <- tibble(
+  Pris = character(),
+  Model = character(),
+  Detaljer = character(),
+  Beskrivelse = character(),
+  Lokation = character(),
+  ForhandlerID = character(),
+  Forhandler_navn = character(),
+  Forhandler_adresse = character(),
+  Forhandler_CVR = character(),
+  Link_til_bil = character()
+)
 
-# exstrakere car-element from stratpage (skla komme en car-list)
-carlist <- page %>% html_elements("article")
-
-
-# får en bil ad gangen 
-pricetag <- ".Listing_price__6B3kE"
-proptag <- ".Listing_properties___ptW"
-modeltag <- "[class^='Listing_makeModel']"
-detailstag <- "[class^='Listing_details']" #hiver alle detaljer ud, der begynder med "listing details"
-detailslistitem <- "[class^='ListingDetails_list']"
-descriptiontag <- "[class^='Listing_description']"
-lokationtag <- "[class^='Listing_location']"
-
-# dataframe til opsamling 
-cn=c("price", "detaljer1", "makemodel", "props", "beskrivelse", "carlink", "carid", "scrapedate")
-colldf <- as.data.frame(matrix(data = NA, nrow = 0, ncol = 9))
-colnames(colldf)=cn
-
-
-for (car in carlist) {
-  tryCatch({
-    car <- carlist[[1]]
-    price <- car %>% html_element(pricetag) %>% html_text()
-    #props <- car %>% html_elements(proptag) %>% html_text()
-    makemodel <- car %>% html_elements(modeltag) %>% html_text()
-    #detaljer1 <- car %>% html_elements(detailstag) %>% html_text()
-    detaljer1 <- car %>% html_elements(detailslistitem) %>% html_text() %>% paste0(collapse = "_")
-    beskrivelse <- car %>% html_elements(descriptiontag) %>% html_text()
-    lokation <- car %>% html_elements(lokationtag) %>% html_text()
-    carlink <- car %>% html_element("a") %>% html_attr("href") %>% str_extract("[0-9]{7}")
-    carid <- carlink %>% str_extract("[0-9]{7}")
-    tmdf <- data.frame(price, detaljer1, makemodel, beskrivelse, lokation, carlink, carid, Sys.time())
-    colldf <- rbind(colldf,tmdf)
-  },
-  error = function(cond){
-    print(makemodel)
+# Loop gennem hver side på Bilbasen
+for (i in 1:last_page) {
+  cat("Henter data fra side:", i, "\n")
+  loopurl <- paste0(vwlink, "&page=", i)
+  Sys.sleep(runif(1, min = 5, max = 10))  # Tilføj pause for at undgå blokering
+  
+  response <- GET(loopurl, headers)
+  page <- read_html(content(response, as = "text", encoding = "UTF-8"))
+  carlist <- page %>% html_elements("article.Listing_listing__XwaYe")
+  
+  # Loop gennem hver bil og hent data
+  for (car in carlist) {
+    tryCatch({
+      Model <- car %>% html_element(".Listing_makeModel__7yqgs") %>% html_text(trim = TRUE)
+      Pris <- car %>% html_element(".Listing_price__6B3kE") %>% html_text(trim = TRUE)
+      Detaljer <- car %>% html_elements(".ListingDetails_listItem___omDg") %>%
+        html_text(trim = TRUE) %>% paste(collapse = ", ")
+      Beskrivelse <- car %>% html_element(".Listing_description__sCNNM") %>% html_text(trim = TRUE)
+      Lokation <- car %>% html_element(".Listing_location__nKGQz") %>% html_text(trim = TRUE)
+      Link_til_bil <- car %>% html_element("a") %>% html_attr("href")
+      
+      # Sørg for komplet URL til bilens detaljeside
+      car_detail_url <- ifelse(startsWith(Link_til_bil, "/"), paste0("https://www.bilbasen.dk", Link_til_bil), Link_til_bil)
+      
+      # Hent detaljeret data fra bilens side
+      Sys.sleep(runif(1, min = 1, max = 3))
+      car_detail_response <- GET(car_detail_url, headers)
+      car_detail_page <- read_html(content(car_detail_response, as = "text", encoding = "UTF-8"))
+      
+      ForhandlerID <- car_detail_page %>%
+        html_element('a[data-e2e="sellers-other-ads-cta"]') %>% 
+        html_attr("href") %>% str_extract("id\\d+")
+      Forhandler_navn <- car_detail_page %>% 
+        html_element(".bas-MuiTypography-root.bas-MuiVipSectionComponent-sectionHeader.bas-MuiTypography-h3") %>% 
+        html_text(trim = TRUE)
+      Forhandler_adresse <- car_detail_page %>% 
+        html_element(".bas-MuiSellerInfoComponent-addressWrapper") %>% 
+        html_text(trim = TRUE)
+      Forhandler_CVR <- car_detail_page %>% 
+        html_element(".bas-MuiSellerInfoComponent-cvr") %>% 
+        html_text(trim = TRUE)
+      
+      # Tilføj data til dataframe
+      vwdf <- vwdf %>%
+        add_row(
+          Pris = Pris,
+          Model = Model,
+          Detaljer = Detaljer,
+          Beskrivelse = Beskrivelse,
+          Lokation = Lokation,
+          ForhandlerID = ForhandlerID,
+          Forhandler_navn = Forhandler_navn,
+          Forhandler_adresse = Forhandler_adresse,
+          Forhandler_CVR = Forhandler_CVR,
+          Link_til_bil = car_detail_url
+        )
+    }, error = function(e) {
+      message("Fejl i dataekstraktion: ", e)
+    })
   }
+}
+
+# Gem data som CSV-fil
+write_csv(vwdf, paste0("VWid4_DATA_RÅFIL__BILBASEN", Sys.Date(), ".csv"))
+message("Data gemt.")
+# ---------------------------------------------------------------------------------------------------------------------------
+########## OPGAVE 1.2 - RENSE DATA ###############
+# Funktion til at fjerne emojis og rense tekst
+rens_tekst <- function(tekst) {
+  tekst %>%
+    str_replace_all("[\U0001F600-\U0001F64F]", "") %>%
+    str_replace_all("[\U0001F300-\U0001F5FF]", "") %>%
+    str_replace_all("[\U0001F680-\U0001F6FF]", "") %>%
+    str_replace_all("\n", ". ") %>%
+    str_replace_all("[^\\w\\s.,]", "") %>%
+    str_replace_all("\\s{2,}", " ") %>%
+    str_trim()
+}
+
+# Anvend funktionen til at rense 'Beskrivelse' kolonnen
+vwdf <- vwdf %>%
+  mutate(
+    Beskrivelse = map_chr(Beskrivelse, rens_tekst),
+    car_id = str_extract(Link_til_bil, "\\d+$")
   )
-}
 
-## hvorfor kommer der ikke error 
+# Gem renset data
+write_csv(vwdf, paste0("VWid4_RENSET_DATA_BILBASEN", Sys.Date(), ".csv"))
+message("Renset data gemt.")
 
-##WebScraping Bilbasen##
-library(httr)
-library(rvest)
-library(dplyr)
-library(httr2)
-#######################
-#Vi skulle vælge et bilmærke at arbejde med, og vi har valgt Porsche til vores opgave##
-#Porsche Link
+# ---------------------------------------------------------------------------------------------------------------------------
+######### OPGAVE 1.3 - HENTE NYE DATA - SIMULERT ############
+# Denne opgave simulerer ændringer i datasættet ved at:
+# 1. Fjerne 5 biler for at simulere salg.
+# 2. Tilføje 2 nye biler.
+# 3. Ændre priser for 3 tilfældige biler.
 
-Porschefirstpage<-"https://www.bilbasen.dk/brugt/bil/porsche?fuel=3&includeengroscvr=true&includeleasing=false"
-rawresporsche<-GET(url=Porschefirstpage)
-porschecontent<- httr::content(rawresporsche, as="text")
-porschepage<-read_html(porschecontent)
+### Trin 1: Tilføj scrapedate til det oprindelige datasæt ###
+# Definer den oprindelige scrapedate
+oprindelig_scrapedate <- as.Date("2024-11-22")
+
+# Tilføj scrapedate som en ny kolonne i datasættet
+vwdf <- vwdf %>%
+  mutate(scrapedate = oprindelig_scrapedate)
+
+write_csv(vwdf, paste0("VWid4_RENSET_DATA_BILBASEN_DONE", Sys.Date(), ".csv"))
 
 
-#extract porsche elements from page 
-porschelist <- porschepage %>% html_elements("article")
-#Vis
-View(porschelist)
-#Sections Porsche#
-#sectiontag <- #.srp_results__2UEV_"
+# Kopiér data og opdater scrapedate for simulering
+ny_scrapedate <- oprindelig_scrapedate + 1  # Simuler en ny scrapedate (én dag senere)
+simuleret_vwdf <- vwdf %>%
+  mutate(scrapedate = ny_scrapedate)
 
-#Tag liste for porsche - find informationer om valgt porsche 
-pricetag <- ".Listing_price_6B3kE"
-ptage = "[class*='Listing_price']"
-mtag = "[class*='Listing_makemodel']"
-propertytag = "[class*='Listing_properties_ptWv']"
-detailstag <- "[class*='Listing_details_bkAK3']"  
-modeltag <- "[class*='Listing_makemodel_7yqgs']"
-descriptiontag <- "[class*='Listing_description_sCNNm']"    
-locationtag <- "[class*='Lisitng_location_nKGQz']"
+### Trin 2: Fjern 5 biler for at simulere salg ###
+# Sæt seed for at sikre, at de samme biler vælges ved hver kørsel
+set.seed(123)
 
-#Lav et loop med tags
-for (car in carlist) {
-  price <- car %>% html_element(pricetag) %>% html_text()
-  makemodel <- car %>% html_element(mtag) %>% html_text()
-  properties <- car %>% html_element(propertytag) %>% html_text()
-  details <- car %>% html_element(detailstag) %>% html_text()
-  model <- car %>% html_element(modeltag) %>% html_text()
-  description <- car %>% html_element(descriptiontag) %>% html_text()
-  location <- car %>% html_element(locationtag) %>% html_text()
-}
+# Vælg tilfældigt 5 biler, der skal fjernes
+solgte_biler <- sample(nrow(simuleret_vwdf), 5)
 
-#Gem tags som en liste
-porsche_info <- list(
-  price = price,
-  makemodel = makemodel,
-  properties = properties,
-  details = details,
-  model = model,
-  description = description,
-  location = location
+# Fjern de valgte rækker fra datasættet
+simuleret_vwdf <- simuleret_vwdf[-solgte_biler, ]
+
+# Udskriv hvilke rækker der blev fjernet
+print("De følgende biler blev fjernet (solgte biler):")
+fjernede_biler <- vwdf[solgte_biler, ]  # Gem de fjernede biler for dokumentation
+print(fjernede_biler)
+
+### Trin 3: Tilføj 2 nye biler ###
+# Opret en tabel med data for de nye biler
+nye_biler <- tibble(
+  Pris = c("400,000", "420,000"),                # Pris i DKK
+  Model = c("VW ID4 GTX", "VW ID4 Pure Performance"),  # Modeller
+  Detaljer = c("2023, 10,000 km, Automatisk", "2022, 15,000 km, Automatisk"),  # Bilens detaljer
+  Beskrivelse = c("Nyeste model, høj ydelse.", "Perfekt stand, lavt forbrug."),  # Beskrivelse
+  Lokation = c("København", "Aarhus"),          # Lokation for salget
+  ForhandlerID = c("ID3000", "ID3001"),         # Forhandlerens ID
+  Forhandler_navn = c("Forhandler A", "Forhandler B"),  # Forhandlerens navn
+  Forhandler_adresse = c("Adresse A", "Adresse B"),     # Forhandlerens adresse
+  Forhandler_CVR = c("CVR3000", "CVR3001"),     # CVR-nummer
+  Link_til_bil = c("https://www.bilbasen.dk/bil1", "https://www.bilbasen.dk/bil2"),  # Links
+  scrapedate = ny_scrapedate                    # Scrapedate for de nye biler
+)
+
+# Tilføj de nye biler til datasættet
+simuleret_vwdf <- bind_rows(simuleret_vwdf, nye_biler)
+
+# Udskriv de tilføjede biler
+print("De to nye biler blev tilføjet:")
+print(nye_biler)
+
+### Trin 4: Ændre priser for 3 tilfældige biler ###
+# Sæt seed for at sikre, at de samme biler vælges ved hver kørsel
+set.seed(456)
+
+# Vælg tilfældigt 3 biler, hvis priser skal ændres
+prisændringer <- sample(nrow(simuleret_vwdf), 3)
+
+# Gem de oprindelige priser for de valgte biler
+opdaterede_biler <- simuleret_vwdf %>%
+  filter(row_number() %in% prisændringer) %>%
+  mutate(Oprindelig_pris = Pris)
+
+# Ændr priserne tilfældigt med ±10%
+simuleret_vwdf <- simuleret_vwdf %>%
+  mutate(
+    Pris = ifelse(
+      row_number() %in% prisændringer,               # Hvis bilens række er blandt de valgte
+      round(as.numeric(str_remove_all(Pris, "\\D")) * runif(1, 0.9, 1.1)),  # Ændr pris med ±10%
+      Pris                                           # Ellers behold den oprindelige pris
+    )
+  )
+
+# Opdater de nye priser i opdaterede_biler
+opdaterede_biler <- opdaterede_biler %>%
+  mutate(
+    Ny_pris = simuleret_vwdf %>%
+      filter(row_number() %in% prisændringer) %>%
+      pull(Pris)
+  ) %>%
+  select(Model, Oprindelig_pris, Ny_pris)  # Behold kun relevante kolonner
+
+# Udskriv de biler med opdaterede priser
+print("Biler med opdaterede priser:")
+print(opdaterede_biler)
+
+### Trin 5: Gem det simulerede datasæt ###
+# Gem det simulerede datasæt som en CSV-fil
+write_csv(simuleret_vwdf, paste0("vw_id4_DATA_SIMULERET_", Sys.Date(), ".csv"))
+message("Det simulerede datasæt er gemt som CSV.")
+
+# ---------------------------------------------------------------------------------------------------------------------------
+#### OPGAVE 1.4 - HENTE OG RENSE TYSK DATA ####
+### Trin 1: Definer URL og HTTP-headers ###
+# URL til tyske VW ID4 biler
+vwlink_de <- "https://www.12gebrauchtwagen.de/auto/vw/id-4"
+
+# Opsæt HTTP-headers for at undgå blokering
+headers_de <- add_headers(
+  `user-agent` = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0 Safari/537.36",
+  `accept` = "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+  `referer` = "https://www.12gebrauchtwagen.de",
+  `accept-language` = "de-DE,de;q=0.9,en-US;q=0.8,en;q=0.7"
 )
 
 
-# Tilføj data som en ny række i data framen
-porsche_data <- rbind(porsche_data, data.frame(
-  price = price,
-  makemodel = makemodel,
-  properties = properties,
-  details = details,
-  model = model,
-  description = description,
-  location = location,
-  stringsAsFactors = FALSE
-))
+### Trin 2: Hent antal sider ###
+# Send en HTTP GET-anmodning for at hente første side
+response_de <- GET(vwlink_de, headers_de)
+if (status_code(response_de) != 200) {
+  stop("Fejl ved hentning af data. Statuskode:", status_code(response_de))
 }
 
-# Vis data framen med alle Porsche-bilerne
-print(porsche_data)
+# Find antal sider baseret på pagination
+rawcontent_de <- content(response_de, as = "text", encoding = "UTF-8")
+page_de <- read_html(rawcontent_de)
+last_page_de <- page_de %>%
+  html_elements("a.pagination-link") %>%  # Find pagination links
+  html_text(trim = TRUE) %>%
+  as.numeric() %>%
+  max(na.rm = TRUE)
+
+cat("Antal sider fundet:", last_page_de, "\n")
 
 
-
-
-## hvis man er banned fra hjemmesiden, skal der oprettes en header 
-# man kan sende: Konsturere egen request med httr 
-# For at lave en request header til R i httr i - spørg chat 
-library(rvest)
-library(httr)
-url="https://www.bilbasen.dk/brugt/bil/porsche?fuel=3&includeengroscvr=true&includeleasing=false"
-response <- GET(
-  url = "https://www.bilbasen.dk/brugt/bil/porsche?includeengroscvr=true&includeleasing=false&pagesize=30",
-  add_headers(
-    `alt-svc` = 'h3=":443"; ma=86400',
-    `cache-control` = "no-store, must-revalidate, no-cache, max-age=0, private",
-    `content-encoding` = "gzip",
-    `content-type` = "text/html; charset=utf-8",
-    date = "Wed, 13 Nov 2024 09:02:59 GMT",
-    server = "Microsoft-IIS/10.0",
-    vary = "Accept-Encoding",
-    via = "1.1 0e07d676d3fd3e76057c8adaa3291b8a.cloudfront.net (CloudFront)",
-    `x-amz-cf-id` = "Kz3tfs4nTQzPsucKqUtWrMapUPmOwcG4-Nj_002Y3fOEV8mC2mKgGQ==",
-    `x-amz-cf-pop` = "CPH50-P1",
-    `x-cache` = "Miss from cloudfront",
-    `x-frame-options` = "SAMEORIGIN",
-    `x-powered-by` = "ASP.NET",
-    `:authority` = "www.bilbasen.dk",
-    `:method` = "GET",
-    `:path` = "/brugt/bil/porsche?includeengroscvr=true&includeleasing=false&pagesize=30",
-    `:scheme` = "https",
-    accept = "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
-    `accept-encoding` = "gzip, deflate, br, zstd",
-    `accept-language` = "da-DK,da;q=0.9,en-US;q=0.8,en;q=0.7",
-    cookie = "_sp_su=false; _cmp_analytics=1; _cmp_personalisation=1; _cmp_marketing=1; _cmp_advertising=1; bbtracker=id=604f20b3-72c3-4b40-8c65-ff9a1702db55; bbsession=id=f18b9eff-212f-4dee-8d69-0156c026267c; consentUUID=46b073a2-72bd-449a-b770-eb23a6c7c9b1_35_37; consentDate=2024-11-11T13:44:45.451Z; GdprConsent={\"version\":\"IAB TCF 2.0\",\"consentString\":\"CQH7NoAQH7NoAAGABCENBOFgAP_gAEPAAAZQJtNV7C_1LWlBoX53SZMgUYxX4fhirkQxBBZJk8QFwLOCMBQXkiEwNA3gNiICGBAAOFBBIQFkGICQBQCgKggRrjDEaECUgCJCJ4AEgAMQUwdICFJJGgFCOQAYxvg4chBQ2B6twMrsBMxwi4BGmWY5BoKwWBAVA58pDPv0bBKakxAO9bw0OgnwZF6BE0AAAAAAAAAAAAAAAAAAAAAAAQQFgGgAKABAADIAGgATAA-AERAJoArIBggDfgHLAQFATCQFwAEAALAAqABwADwALwAiAB-AEIAI4AYEAygDLAHcAP2AkQCSgFRAMUAo8BeYDVwG5gP-AhaFABAAKAgKEAGAAPACOATQAnYB1QD-gLEAW4Av8BkIDUwH7igAIB1RgAEA6o6A0AAsACoAHAAXgBEADEAH4AYAAygBogD9AItAR0BJQCogGKAPsAmQBR4C3QF5gMsAauA-4B_YD_gIWjwAQACgICjgCoACAAHgAXACOAFAAPgAjgByADuAIQATsA6oB_QFiALcAX-AyEBqYDcwHLAP3IQCQAFgBiAEcAMAAdwBUQDFAP7AhaRAAgQFIABwAEAAPAHIAdUBYgDUwHLEoBYACAAFgAcACIAGIARwAwACogGKAUeAvMmABAgKSAEgAXACOAO4A6oC3AF_gMsAcsA_cpAZAAWABUADgARAApABiAD8AMAAZQA0QB-gEWAI6ASUAqIBigD2gH2AXmAywB4oD-wH_AQtAhyVABAAKAgKUAGgAXACOAI4AcgA7gCRAF1AOqAqQBbgDUwG5gP3LQAwBgADuAPsWABgDLAamA5Y.YAAAAAAAAAAA\"};",
-    priority = "u=0, i",
-    referer = "https://www.bilbasen.dk/",
-    `sec-ch-ua` = '"Chromium";v="130", "Google Chrome";v="130", "Not?A_Brand";v="99"',
-    `sec-ch-ua-mobile` = "?0",
-    `sec-ch-ua-platform` = '"macOS"',
-    `sec-fetch-dest` = "document",
-    `sec-fetch-mode` = "navigate",
-    `sec-fetch-site` = "same-origin",
-    `sec-fetch-user` = "?1",
-    `upgrade-insecure-requests` = "1",
-    `user-agent` = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"
-  )
+### Trin 3: Initialiser datastruktur ###
+# Opret en tom dataframe til at gemme data
+vwdf_de <- tibble(
+  Model = character(),       # Bilens model
+  Pris = character(),        # Bilens pris (i EUR som tekst)
+  Kørte_kilometer = character(), # kørte kilometer 
+  Link_til_bil = character() # Link til bilens side
 )
 
-porschecontent <- content(response, "text")
-porschepage <- read_html(porschecontent)
+### Trin 4: Loop gennem sider og scrap data ###
+for (i in 1:last_page_de) {
+  cat("Henter data fra side:", i, "\n")
+  
+  # Generer URL til den aktuelle side
+  loopurl_de <- paste0(vwlink_de, "?page=", i)
+  Sys.sleep(runif(1, min = 5, max = 10))  # Undgå blokering
+  
+  # Hent HTML-indhold fra siden
+  response_de <- GET(loopurl_de, headers_de)
+  rawcontent_de <- content(response_de, as = "text", encoding = "UTF-8")
+  
+  # Tjek om siden er tom
+  if (nchar(rawcontent_de) == 0) {
+    message("Side ", i, " er tom. Springes over.")
+    next
+  }
+  
+  # Læs HTML-strukturen fra siden
+  page_de <- read_html(rawcontent_de)
+  carlist_de <- page_de %>% html_elements(".columns.pt-4")  # Find bil-elementer
+  
+  # Loop gennem hver bil
+  for (car in carlist_de) {
+    tryCatch({
+      # Hent data for model
+      model <- car %>% 
+        html_element(".h4.truncate .font-bold") %>% 
+        html_text(trim = TRUE)
+      
+      # Hent pris
+      pris <- car %>% 
+        html_element(".column.small-6.medium-8") %>% 
+        html_text(trim = TRUE)
+      
+      # Hent kørte kilometer
+      km_css_selector <- ".column.medium-4.text-md.mt-half.mileage"  # CSS-vælger fra inspektør
+      Kørte_kilometer <- car %>% 
+        html_element(km_css_selector) %>% 
+        html_text(trim = TRUE)
+      
+      # Hent link til bil
+      link <- car %>% 
+        html_element("a") %>% 
+        html_attr("href")
+      
+      # Sørg for fuld URL
+      if (!is.na(link) && startsWith(link, "/")) {
+        link <- paste0("https://www.12gebrauchtwagen.de", link)
+      }
+      
+      # Tilføj data til dataframe
+      vwdf_de <- vwdf_de %>%
+        add_row(
+          Model = model,
+          Pris = pris,
+          Kørte_kilometer = Kørte_kilometer,
+          Link_til_bil = link
+        )
+      
+    }, error = function(e) {
+      # Fejlhåndtering for individuelle elementer
+      message("Fejl ved bil på side ", i, ": ", e)
+    })
+  }
+}
 
-response$status_code
+write_csv(vwdf_de, paste0("vwid4_RÅFIL_12GEBRWAGEN", Sys.Date(), ".csv"))
+read_csv("vwid4_RÅFIL_12GEBRWAGEN2024-11-25.csv")
+
+### Trin 5: Rens data ###
+vwdf_de <- vwdf_de %>%
+  mutate(
+    Pris = str_extract(Pris, "\\d+([.,]\\d+)?"),  # Uddrag kun tal fra pris
+    Pris = str_replace_all(Pris, ",", ""),        # Fjern kommaer som tusind-separator
+    Pris = as.numeric(Pris),                     # Konverter til numerisk
+    Model = rens_tekst(Model),                   # Brug rens_tekst-funktionen på modellen
+    Link_til_bil = rens_tekst(Link_til_bil),     # Brug rens_tekst på links, hvis nødvendigt
+    Kørte_kilometer = str_extract(Kørte_kilometer, "\\d+(?:\\.\\d+)?") %>% # Uddrag kun tal fra Kørte_kilometer
+      str_replace_all("\\.", "") %>%                      # Fjern eventuelle punktummer
+      as.numeric()                                       # Konverter til numerisk
+  ) %>%
+  drop_na()  # Fjern rækker med manglende værdier
+
+### Trin 1: Tilføj scrapedate til det oprindelige datasæt ###
+# Definer den oprindelige scrapedate
+oprindelig_scrapedate <- as.Date("2024-11-22")
+
+# Tilføj scrapedate som en ny kolonne i datasættet
+vwdf_de <- vwdf_de %>%
+  mutate(scrapedate = oprindelig_scrapedate)
+
+# Kopiér data og opdater scrapedate for simulering
+ny_scrapedate <- oprindelig_scrapedate + 1  # Simuler en ny scrapedate (én dag senere)
+simuleret_vwdf_de <- vwdf_de %>%
+  mutate(scrapedate = ny_scrapedate)
+
+### Trin 6: Gem renset data ###
+# Gem datasættet som CSV-fil
+write_csv(vwdf_de, paste0("vwid4_RÅFIL_12GEBRWAGEN_DONE", Sys.Date(), ".csv"))
 
 
+### TRIN 7 - HVOR SKAL DER KØBES BIL 
+# omregn EUR til dkk inklussiv registreringsafgift 
+valutakurs <- 7.45  # 1 EUR = 7.45 DKK.    
+registreringsafgift <- 0.25  # 25% afgift
 
-## PRIS, MAKE, MODEL, DOORS, AGE, KM, DISTANCE ekstraher fra oprindeligt datasæt 
-# Load the necessary libraries
+# Tilføj kolonner for DKK-priser og priser med registreringsafgift
+vwdf_de <- vwdf_de %>%
+  mutate(
+    Pris = as.numeric(Pris) * 1000,  # Hvis priser er angivet i tusinde
+    Pris_DKK = Pris * valutakurs,  # Omregn pris til DKK
+    Pris_med_afgift = Pris_DKK * (1 + registreringsafgift)  # Beregn pris inkl. moms/afgift
+  )
 
-##### FÅ KODE FRA WULLF!!!! 
+
+# opret en kategori for kilometerstand (slid)
+# Ekstraher kilometerstand fra 'Detaljer' og konverter til numerisk
+extract_kilometers <- function(details) {
+  str_extract(details, "\\d{1,3}(?:\\.\\d{3})*") %>%  # Find mønsteret for tusinder
+    str_remove_all("\\.") %>%  # Fjern punktummer fra tusind-separator
+    as.numeric() %>%           # Konverter til numerisk
+    `*`(1000)                  # Skaler til tusinde (fx 6 bliver til 6000)
+}
+
+# Anvend funktionen og tilføj kilometerkategorier
+vwdf <- vwdf %>%
+  mutate(
+    Kilometer = extract_kilometers(Detaljer),  # Ekstraher og skaler kilometerstand
+    Kilometer_kategori = cut(
+      Kilometer,
+      breaks = c(0, 10000, 50000, 100000, Inf),  # Definer kategorier: 0-10k, 10-50k, 50-100k, >100k
+      labels = c("0-10k", "10-50k", "50-100k", ">100k"),
+      include.lowest = TRUE  # Inkluder laveste grænse
+    )
+  )
+
+# fjerner først "kr" og "." fra pris i vwdf
+vwdf <- vwdf %>%
+  mutate(
+    Pris = str_remove_all(Pris, "kr"),         # Fjern 'kr'
+    Pris = str_remove_all(Pris, "\\.")       # Fjern alle punktummer
+  )
+vwdf <- vwdf %>%
+  mutate(Pris = as.numeric(Pris))  # Konverter tekst til numerisk
+str(vwdf$Pris)  # Skal nu vise `num`
+head(vwdf$Pris)  # Viser de første rækker
+
+# Kombiner det danske og tyske datasæt
+kombineret_vw <- bind_rows(
+  vwdf %>%
+    select(Model, Pris_DKK = Pris, Kilometer_kategori) %>%
+    mutate(
+      Land = "Danmark",
+      Kilometer_kategori = as.character(Kilometer_kategori)  # Konverter til karakter
+    ),
+  
+  vwdf_de %>%
+    select(Model, Pris_DKK = Pris_med_afgift, Kilometer_kategori = Kørte_kilometer) %>%
+    mutate(
+      Land = "Tyskland",
+      Kilometer_kategori = cut(  # Konverter Kørte_kilometer til kategorier som i vwdf
+        Kilometer_kategori,
+        breaks = c(0, 10000, 50000, 100000, Inf),
+        labels = c("0-10k", "10-50k", "50-100k", ">100k"),
+        include.lowest = TRUE
+      ) %>% as.character()  # Konverter til karakter
+    )
+)
+
+write_csv(kombineret_vw, paste0("vwid4_KOMBINERET", Sys.Date(), ".csv"))
+
+# Visualisere priser baseret på land og kilometerkategori
+library(ggplot2)
+
+# Aggregér data for gennemsnitlig pris pr. kilometerkategori og land
+aggregated_data <- kombineret_vw %>%
+  group_by(Kilometer_kategori, Land) %>%
+  summarise(
+    Gennemsnit_Pris = mean(Pris_DKK, na.rm = TRUE)
+  ) %>%
+  ungroup()
+
+# Omform 'Kilometer_kategori' til en ordnet faktor
+aggregated_data <- aggregated_data %>%
+  mutate(
+    Kilometer_kategori = factor(
+      Kilometer_kategori,
+      levels = c("0-10k", "10-50k", "50-100k", ">100k"),  # Definer rækkefølgen
+      ordered = TRUE
+    )
+  )
+
+# Kontrollér, at kategorien '>100k' er til stede og ordnet korrekt
+print(aggregated_data)
+
+# Opdateret søjlediagram for gennemsnitlige priser
+ggplot(aggregated_data, aes(x = Kilometer_kategori, y = Gennemsnit_Pris, fill = Land)) +
+  geom_bar(stat = "identity", position = position_dodge(width = 0.8), width = 0.6) +  # Søjler forskudt
+  scale_y_continuous(labels = scales::comma) +  # Y-akse med tusind-separator
+  scale_fill_manual(values = c("Danmark" = "blue", "Tyskland" = "#ff7f0e")) +  # Farver
+  labs(
+    title = "Sammenligning af bilpriser på VW ID4 i Danmark og Tyskland",
+    subtitle = "Priserne for Tyskland inkluderer importafgifter",
+    x = "Kilometerkategori",
+    y = "Gennemsnitlig priser i DKK",
+    fill = "Land"
+  ) +
+  theme_minimal(base_size = 14) +  # Tilpas tema
+  theme(
+    legend.position = "top",
+    plot.title = element_text(face = "bold", size = 18),
+    plot.subtitle = element_text(size = 14),
+    axis.text.x = element_text(size = 12),  # Forstør tekst på x-aksen
+    axis.text.y = element_text(size = 12),  # Forstør tekst på y-aksen
+    legend.text = element_text(size = 12)
+  )
 
 
-### HVAD ER Rwhois::whois_query("161.35.185.225)
+# -------------------------------------------------------------------------------------------------------------
+## VIGTIGE CSV FILER
+#vwdf få fil, VILBASEN 
+vwdf <- read_csv("VWid4_DATA_RÅFIL__BILBASEN2024-11-25.csv")
+#VWDF - DEN DANSKE WEBSCRAPPING, RENSET, 
+vwdf <- read_csv("VWid4_RENSET_DATA_BILBASEN2024-11-25.csv")
+# DANSK INKLUSSIV SCRAPEDATE 
+vwdf<- read_csv("VWid4_RENSET_DATA_BILBASEN_DONE2024-11-25.csv")
+
+#vwdf_de den rå fil 
+vwdf_de<- read_csv("vwid4_RÅFIL_12GEBRWAGEN2024-11-25.csv")
+#VWDF - DEN TYSKE WEBSCRAPPING, RENSET, INKLUSSIV SCRAPEDATE
+vwdf_de <- read_csv("vwid4_RÅFIL_12GEBRWAGEN_DONE2024-11-25.csv")
+# KOMBINERET TYSK OG DANSK - TIL PLOT
+kombineret_vw <- read_csv("vwid4_KOMBINERET2024-11-25.csv")
