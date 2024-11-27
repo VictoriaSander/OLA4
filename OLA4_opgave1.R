@@ -503,6 +503,107 @@ ggplot(aggregated_data, aes(x = Kilometer_kategori, y = Gennemsnit_Pris, fill = 
   )
 
 
+#### HVOR GIVER DET BEDST MENING AT KØBE BIL - BILBASEN ELLER AUTOSCOUT? ###
+# Indlæs nødvendige biblioteker
+library(tidyverse)
+library(ggplot2)
+library(scales)
+
+# 1. Importér de to datasæt
+bilbasen_data <- read_csv("VWid4_RENSET_DATA_BILBASEN_DONE2024-11-25.csv")
+autoscout_data <- read_csv("de_vwdf.csv")
+
+# 2. Omregn Autoscout24-priser fra EUR til DKK inkl. afgift
+valutakurs <- 7.45  # 1 EUR = 7.45 DKK
+registreringsafgift <- 0.25  # 25%
+
+autoscout_data <- autoscout_data %>%
+  mutate(
+    price_eur = as.numeric(str_remove_all(price_eur, "[^0-9]")),  # Rens og konverter til numerisk
+    price_dkk = price_eur * valutakurs,  # Omregn til DKK
+    price_dkk_with_tax = price_dkk * (1 + registreringsafgift)  # Inkl. registreringsafgift
+  )
+
+# 3. Rensning og konvertering af kilometerdata
+# a. Bilbasen: Ekstraher kilometer fra 'Detaljer'-kolonnen
+bilbasen_data <- bilbasen_data %>%
+  mutate(
+    Kilometer = str_extract(Detaljer, "(?<=, )\\d{1,3}(\\.\\d{3})*(?= km)") %>%  # Ekstraher kilometer med tusindtals-separator
+      str_remove_all("\\.") %>%  # Fjern punktummer
+      as.numeric(),  # Konverter til numerisk
+    Kilometer_kategori = cut(
+      Kilometer,
+      breaks = c(0, 10000, 50000, 100000, Inf),
+      labels = c("0-10k", "10-50k", "50-100k", ">100k"),
+      include.lowest = TRUE
+    )
+  )
+
+# Rensning og konvertering af mileage_km
+autoscout_data <- autoscout_data %>%
+  mutate(
+    Kilometer = str_remove_all(mileage_km, "[^0-9]") %>%  # Fjern ikke-numeriske tegn, inkl. "km" og komma
+      as.numeric(),  # Konverter til numerisk
+    Kilometer_kategori = cut(
+      Kilometer,
+      breaks = c(0, 10000, 50000, 100000, Inf),
+      labels = c("0-10k", "10-50k", "50-100k", ">100k"),
+      include.lowest = TRUE
+    )
+  )
+
+# 4. Kombiner data fra begge kilder
+combined_data <- bind_rows(
+  bilbasen_data %>%
+    select(Model, Pris_DKK = Pris, Kilometer_kategori) %>%
+    mutate(
+      Pris_DKK = as.numeric(str_remove_all(Pris_DKK, "[^0-9]")),  # Fjern ikke-numeriske tegn
+      Land = "Danmark"
+    ),
+  autoscout_data %>%
+    select(Model = car_model, Pris_DKK = price_dkk_with_tax, Kilometer_kategori) %>%
+    mutate(Land = "Tyskland")
+)
+
+# 5. Beregn gennemsnitlig pris for hver kilometerkategori og land
+aggregated_prices <- combined_data %>%
+  group_by(Kilometer_kategori, Land) %>%
+  summarise(Gennemsnit_Pris = mean(Pris_DKK, na.rm = TRUE)) %>%
+  ungroup()
+
+# Kontrollér data i aggregated_prices
+print(aggregated_prices)
+
+# 6. Plot søjlediagram
+ggplot(aggregated_prices, aes(x = Kilometer_kategori, y = Gennemsnit_Pris, fill = Land)) +
+  geom_bar(stat = "identity", position = position_dodge(width = 0.8), width = 0.7) +
+  scale_y_continuous(labels = scales::comma) +
+  scale_fill_manual(values = c("Danmark" = "blue", "Tyskland" = "orange")) +
+  labs(
+    title = "Sammenligning af VW ID.4 priser: Danmark vs. Tyskland",
+    subtitle = "Priser i Tyskland inkluderer registreringsafgift",
+    x = "Kilometerkategori",
+    y = "Gennemsnitlig pris (DKK)",
+    fill = ""
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    legend.position = "top",
+    plot.title = element_text(size = 18, face = "bold"),
+    plot.subtitle = element_text(size = 14),
+    axis.text = element_text(size = 12),
+    axis.title = element_text(size = 14)
+  )
+
+# Validering af kilometerdata
+print(head(bilbasen_data$Kilometer))
+print(head(autoscout_data$Kilometer))
+
+# gemmer csv filer
+write.csv(bilbasen_data, "BILBASENDATA_1.4", row.names = FALSE)
+write_csv(autoscout_data, "AUTOSCOUT1.4", row.names = FALSE)
+
+
 # -------------------------------------------------------------------------------------------------------------
 ## VIGTIGE CSV FILER
 #vwdf få fil, VILBASEN 
@@ -512,9 +613,14 @@ vwdf <- read_csv("VWid4_RENSET_DATA_BILBASEN2024-11-25.csv")
 # DANSK INKLUSSIV SCRAPEDATE 
 vwdf<- read_csv("VWid4_RENSET_DATA_BILBASEN_DONE2024-11-25.csv")
 
-#vwdf_de den rå fil 
+#vwdf_de den rå fil (anvendes ikke i skirftlig opgave. Webscrapping fejler)
 vwdf_de<- read_csv("vwid4_RÅFIL_12GEBRWAGEN2024-11-25.csv")
 #VWDF - DEN TYSKE WEBSCRAPPING, RENSET, INKLUSSIV SCRAPEDATE
 vwdf_de <- read_csv("vwid4_RÅFIL_12GEBRWAGEN_DONE2024-11-25.csv")
 # KOMBINERET TYSK OG DANSK - TIL PLOT
+
+# opgave 1.4 data, inkl. km og km.cat
+write.csv(bilbasen_data, "BILBASENDATA_1.4", row.names = FALSE)
+write_csv(autoscout_data, "AUTOSCOUT1.4", row.names = FALSE)
+
 kombineret_vw <- read_csv("vwid4_KOMBINERET2024-11-25.csv")
